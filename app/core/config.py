@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     model_dir: str = "app/ml/models"
     settings_encryption_key: str = "change-me-to-32-bytes-minimum"
     admin_cookie_secure: bool = False
+    admin_cookie_samesite: str = "lax"
     cors_origins: str = "http://localhost:3000"
     port: int = 8000
 

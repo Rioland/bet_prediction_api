@@ -33,7 +33,7 @@ def _set_admin_cookies(response: Response, access_token: str, refresh_token: str
         access_token,
         httponly=True,
         secure=settings.admin_cookie_secure,
-        samesite="lax",
+        samesite=settings.admin_cookie_samesite,
         max_age=settings.access_token_expire_minutes * 60,
         path="/",
     )
@@ -42,7 +42,7 @@ def _set_admin_cookies(response: Response, access_token: str, refresh_token: str
         refresh_token,
         httponly=True,
         secure=settings.admin_cookie_secure,
-        samesite="lax",
+        samesite=settings.admin_cookie_samesite,
         max_age=settings.refresh_token_expire_minutes * 60,
         path="/",
     )
@@ -51,7 +51,7 @@ def _set_admin_cookies(response: Response, access_token: str, refresh_token: str
         csrf_token,
         httponly=False,
         secure=settings.admin_cookie_secure,
-        samesite="lax",
+        samesite=settings.admin_cookie_samesite,
         max_age=settings.refresh_token_expire_minutes * 60,
         path="/",
     )

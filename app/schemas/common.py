@@ -30,6 +30,9 @@ class MatchOut(BaseModel):
     league_id: int
     home_team_id: int
     away_team_id: int
+    home_team_name: str | None = None
+    away_team_name: str | None = None
+    league_name: str | None = None
     kickoff_time: datetime
     status: str
 
