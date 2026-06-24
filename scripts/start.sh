@@ -4,6 +4,21 @@ set -e
 export PYTHONPATH=/code
 cd /code
 
+if [ -z "$DATABASE_URL" ]; then
+  echo "ERROR: DATABASE_URL is not set."
+  echo "On Render: Dashboard -> your Postgres -> Connect -> Internal Database URL"
+  echo "Paste it as DATABASE_URL on the web service Environment tab."
+  exit 1
+fi
+
+case "$DATABASE_URL" in
+  *@postgres:*|*@postgres/*)
+    echo "ERROR: DATABASE_URL points to Docker host 'postgres' (local docker-compose only)."
+    echo "Use your Render Postgres Internal Database URL instead."
+    exit 1
+    ;;
+esac
+
 echo "Running database migrations..."
 alembic upgrade head
 

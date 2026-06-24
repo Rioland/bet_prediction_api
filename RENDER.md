@@ -75,8 +75,23 @@ NEXT_PUBLIC_API_URL=https://football-api.onrender.com
 
 Both work well. Render’s free web services **spin down after inactivity** (~50s cold start on wake).
 
+## Troubleshooting: `failed to resolve host 'postgres'`
+
+This means `DATABASE_URL` still points at the **Docker Compose** hostname (`postgres`), not Render Postgres.
+
+**Fix:**
+
+1. In Render, open your **PostgreSQL** service (create one if missing: **New → PostgreSQL**).
+2. Copy **Internal Database URL** (starts with `postgresql://` and a Render hostname like `dpg-xxxxx-a`).
+3. Open your **football-api** web service → **Environment**.
+4. Set `DATABASE_URL` to that Internal URL (delete any value containing `@postgres:`).
+5. Set `ENVIRONMENT` = `production`.
+6. **Save** and **Manual Deploy**.
+
+If you used the Blueprint (`render.yaml`), confirm `football-db` exists and `DATABASE_URL` is linked under the web service env vars — not typed manually from `.env.example`.
+
 ## Notes
 
 - `DATABASE_URL` from Render uses `postgresql://`; the app converts it automatically.
-- Do not commit `.env` — use Render **Environment** tab.
+- Do not commit `.env` — use Render **Environment** tab. `.env` is excluded from Docker builds.
 - Health check path: `/health`

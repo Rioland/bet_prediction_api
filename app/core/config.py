@@ -1,5 +1,13 @@
-from pydantic import field_validator
+import os
+
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _env_file() -> str | None:
+    if os.getenv("ENVIRONMENT", "development") == "production":
+        return None
+    return ".env"
 
 
 class Settings(BaseSettings):
@@ -20,7 +28,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     port: int = 8000
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_env_file(), extra="ignore")
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -30,6 +38,24 @@ class Settings(BaseSettings):
         if value.startswith("postgresql://"):
             return value.replace("postgresql://", "postgresql+psycopg://", 1)
         return value
+
+    @model_validator(mode="after")
+    def validate_production_urls(self) -> "Settings":
+        if self.environment != "production":
+            return self
+
+        docker_hosts = ("@postgres:", "@postgres/", "@redis:", "@redis/")
+        if any(host in self.database_url for host in docker_hosts[:2]):
+            raise ValueError(
+                "DATABASE_URL uses Docker hostname 'postgres'. On Render/Railway, set "
+                "DATABASE_URL to your managed Postgres Internal Database URL."
+            )
+        if any(host in self.redis_url for host in docker_hosts[2:]):
+            raise ValueError(
+                "REDIS_URL uses Docker hostname 'redis'. On Render, link the Redis "
+                "service or set REDIS_URL to your managed Redis connection string."
+            )
+        return self
 
 
 settings = Settings()  # type: ignore[call-arg]
