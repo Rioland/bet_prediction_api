@@ -79,6 +79,27 @@ class Match(Base):
     away_team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True)
     kickoff_time: Mapped[datetime] = mapped_column(DateTime, index=True)
     status: Mapped[str] = mapped_column(String(50), index=True)
+    external_id: Mapped[int | None] = mapped_column(Integer, unique=True, index=True)
+    season: Mapped[int | None] = mapped_column(Integer, index=True)
+
+    # Full-time result; NULL until the match is played. These are the labels.
+    home_goals: Mapped[int | None] = mapped_column(Integer)
+    away_goals: Mapped[int | None] = mapped_column(Integer)
+
+    # Post-match team stats, used only to build *historical* rolling features for
+    # later matches - never as features for this match.
+    home_shots_on_target: Mapped[int | None] = mapped_column(Integer)
+    away_shots_on_target: Mapped[int | None] = mapped_column(Integer)
+    home_possession: Mapped[float | None] = mapped_column(Float)
+    away_possession: Mapped[float | None] = mapped_column(Float)
+    home_corners: Mapped[int | None] = mapped_column(Integer)
+    away_corners: Mapped[int | None] = mapped_column(Integer)
+
+    # Closing market odds, for value detection and as a benchmark to beat.
+    odds_home: Mapped[float | None] = mapped_column(Float)
+    odds_draw: Mapped[float | None] = mapped_column(Float)
+    odds_away: Mapped[float | None] = mapped_column(Float)
+
     league: Mapped["League"] = relationship()
     home_team: Mapped["Team"] = relationship(foreign_keys=[home_team_id])
     away_team: Mapped["Team"] = relationship(foreign_keys=[away_team_id])
