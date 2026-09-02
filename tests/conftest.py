@@ -15,12 +15,17 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.db.session as db_module
+from app.core.rate_limit import limiter
 from app.core.security import hash_password
 from app.db.session import Base, get_db
 from app.main import app
 from app.models.entities import User, UserRole
 
 TEST_PASSWORD = "password123"
+
+# Rate limits are asserted in test_rate_limit.py; leaving them on would make every
+# other test order-dependent.
+limiter.enabled = False
 
 TEST_ENGINE = create_engine(
     "sqlite://",
