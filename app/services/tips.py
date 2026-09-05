@@ -15,8 +15,9 @@ that says anything about whether a bet is worth placing.
 """
 
 from dataclasses import dataclass
-from math import exp, factorial
 from typing import Any
+
+from app.ml.dixon_coles import over_line, score_matrix
 
 # A tip is only surfaced if the model is at least this sure.
 MIN_PROBABILITY = 0.55
@@ -55,15 +56,14 @@ class Tip:
         }
 
 
-def _poisson_pmf(k: int, lam: float) -> float:
-    return (lam**k) * exp(-lam) / factorial(k)
+def total_goals_over(line: float, home_xg: float, away_xg: float) -> float:
+    """P(total goals > line) from the Dixon-Coles scoreline distribution.
 
-
-def total_goals_over(line: float, expected_total: float) -> float:
-    """P(total goals > line) with goals modelled as Poisson(expected_total)."""
-    threshold = int(line)  # e.g. 1.5 -> sum P(0..1) is the "under" mass
-    under = sum(_poisson_pmf(k, expected_total) for k in range(threshold + 1))
-    return max(0.0, min(1.0, 1.0 - under))
+    Reading every goal line off one joint distribution keeps them mutually
+    consistent: P(over 1.5) can never come out below P(over 2.5), which
+    deriving each line separately does not guarantee.
+    """
+    return over_line(score_matrix(home_xg, away_xg), line)
 
 
 def _fair(probability: float) -> float:
@@ -86,7 +86,8 @@ def build_tips(prediction: dict[str, Any], match: dict[str, Any]) -> list[Tip]:
     p_home = prediction["home_win_prob"]
     p_draw = prediction["draw_prob"]
     p_away = prediction["away_win_prob"]
-    expected_total = prediction["home_xg"] + prediction["away_xg"]
+    home_xg, away_xg = prediction["home_xg"], prediction["away_xg"]
+    expected_total = home_xg + away_xg
 
     tips: list[Tip] = [
         _tip("home_win", "1", f"{home} to win", p_home, match.get("odds_home"),
@@ -104,10 +105,10 @@ def build_tips(prediction: dict[str, Any], match: dict[str, Any]) -> list[Tip]:
         _tip("over_2_5", "Over 2.5", "Over 2.5 goals", prediction["over_25_prob"], None,
              f"Goals model puts this at {prediction['over_25_prob']:.0%} for over 2.5."),
         _tip("over_1_5", "Over 1.5", "Over 1.5 goals",
-             total_goals_over(1.5, expected_total), None,
+             total_goals_over(1.5, home_xg, away_xg), None,
              f"Expected goals of {expected_total:.1f} across the fixture.", source="derived"),
         _tip("under_3_5", "Under 3.5", "Under 3.5 goals",
-             1 - total_goals_over(3.5, expected_total), None,
+             1 - total_goals_over(3.5, home_xg, away_xg), None,
              f"Expected goals of {expected_total:.1f} keeps this below 3.5.", source="derived"),
     ]
     return sorted(tips, key=lambda t: t.probability, reverse=True)

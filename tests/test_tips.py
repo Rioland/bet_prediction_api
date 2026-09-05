@@ -16,17 +16,17 @@ MATCH = {"home_team": "Arsenal", "away_team": "Brentford",
          "odds_home": 1.70, "odds_draw": 3.90, "odds_away": 5.50}
 
 
-def test_poisson_goal_lines_are_ordered_and_bounded() -> None:
-    for total in (1.2, 2.7, 4.0):
-        p15 = total_goals_over(1.5, total)
-        p25 = total_goals_over(2.5, total)
-        p35 = total_goals_over(3.5, total)
-        assert 0 <= p35 <= p25 <= p15 <= 1, f"lines out of order at xG {total}"
+def test_goal_lines_are_ordered_and_bounded() -> None:
+    for home_xg, away_xg in ((0.7, 0.5), (1.5, 1.2), (2.2, 1.8)):
+        p15 = total_goals_over(1.5, home_xg, away_xg)
+        p25 = total_goals_over(2.5, home_xg, away_xg)
+        p35 = total_goals_over(3.5, home_xg, away_xg)
+        assert 0 <= p35 <= p25 <= p15 <= 1, f"lines out of order at {home_xg}/{away_xg}"
 
 
 def test_average_match_prices_over_25_near_the_real_world_rate() -> None:
     # A 2.7-goal fixture should sit close to the ~50% over-2.5 rate football shows.
-    assert 0.45 < total_goals_over(2.5, 2.7) < 0.60
+    assert 0.45 < total_goals_over(2.5, 1.5, 1.2) < 0.60
 
 
 def test_tips_cover_every_market_and_sort_by_probability() -> None:
