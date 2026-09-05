@@ -6,22 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.ml.features import build_dataset
-from app.ml.train import train_models
 from app.models.entities import League, Match, Team
-from tests.test_training import _simulate_league
-
-
-@pytest.fixture()
-def trained_models(tmp_path, monkeypatch):
-    from app.core.config import settings
-    from app.services import prediction_service
-
-    monkeypatch.setattr(settings, "model_dir", str(tmp_path))
-    prediction_service.clear_model_cache()
-    train_models(build_dataset(_simulate_league()), targets=["match_winner", "btts", "over_under_2_5"])
-    yield
-    prediction_service.clear_model_cache()
 
 
 @pytest.fixture()

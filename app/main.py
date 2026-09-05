@@ -19,6 +19,7 @@ from app.api.routes import (
     auth,
     football,
     matches,
+    news,
     notifications,
     predictions,
     subscriptions,
@@ -58,6 +59,7 @@ async def global_exception_handler(_: Request, exc: Exception) -> JSONResponse:
 
 app.include_router(auth.router)
 app.include_router(football.router)
+app.include_router(news.router)
 app.include_router(matches.router)
 app.include_router(predictions.router)
 app.include_router(subscriptions.router)

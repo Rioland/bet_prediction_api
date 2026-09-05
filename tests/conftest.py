@@ -106,3 +106,19 @@ def admin_login(
     response = client.post("/admin/auth/login", json=payload)
     assert response.status_code == 200, response.text
     return client
+
+
+@pytest.fixture()
+def trained_models(tmp_path, monkeypatch):
+    """Train real models into a temp dir so prediction endpoints can be exercised."""
+    from app.core.config import settings
+    from app.ml.features import build_dataset
+    from app.ml.train import train_models
+    from app.services import prediction_service
+    from tests.test_training import _simulate_league
+
+    monkeypatch.setattr(settings, "model_dir", str(tmp_path))
+    prediction_service.clear_model_cache()
+    train_models(build_dataset(_simulate_league()), targets=["match_winner", "btts", "over_under_2_5"])
+    yield
+    prediction_service.clear_model_cache()
