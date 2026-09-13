@@ -1,32 +1,43 @@
 import os
 
-os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
-os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-pytest-only")
-os.environ.setdefault("FOOTBALL_API_BASE_URL", "https://example.com")
-os.environ.setdefault("FOOTBALL_API_KEY", "test-key")
-os.environ.setdefault("SETTINGS_ENCRYPTION_KEY", "test-encryption-key-32-chars-min")
+os.environ.setdefault("PREDICTOR_DATABASE_URL", "sqlite:///:memory:")
+os.environ.setdefault("JWT_SECRET", "test-secret-for-pytest-only")
+# Otherwise the app lifespan fetches live fixtures and writes them into the
+# test database, making every count non-deterministic.
+os.environ["FIXTURE_REFRESH_ENABLED"] = "0"
+os.environ.setdefault("OPAY_MERCHANT_ID", "256612345678901")
+os.environ.setdefault("OPAY_PUBLIC_KEY", "OPAYPUB-test")
+os.environ.setdefault("OPAY_SECRET_KEY", "OPAYPRV-route-tests")
 
-import pyotp
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-import app.db.session as db_module
-from app.core.security import hash_password
-from app.db.session import Base, get_db
-from app.main import app
-from app.models.entities import User, UserRole
+import app.database as db_module
+from app.database import Base
+from app.rate_limit import limiter
 
-TEST_PASSWORD = "password123"
+# Rate limits are asserted in test_account.py; leaving them on everywhere would
+# make unrelated tests fail depending on the order they run in.
+limiter.enabled = False
 
-TEST_ENGINE = create_engine(
-    "sqlite://",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
+# SQLite by default, for speed. Production runs PostgreSQL, and the two disagree
+# on things tests must catch - a BOOLEAN column with DEFAULT 0 is valid SQLite
+# and a hard error in PostgreSQL. Point TEST_DATABASE_URL at a disposable
+# Postgres database to run the suite there:
+#
+#   TEST_DATABASE_URL=postgresql://localhost/predictor_test python -m pytest
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "").strip()
+
+if TEST_DATABASE_URL:
+    from app.config import _normalise_database_url
+
+    TEST_ENGINE = create_engine(_normalise_database_url(TEST_DATABASE_URL), pool_pre_ping=True)
+else:
+    TEST_ENGINE = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
 TestSessionLocal = sessionmaker(bind=TEST_ENGINE, autoflush=False, autocommit=False)
 
 db_module.engine = TEST_ENGINE
@@ -45,59 +56,18 @@ def db_session() -> Session:
 
 
 @pytest.fixture()
-def client(db_session: Session) -> TestClient:
-    def override_get_db():
-        try:
-            yield db_session
-        finally:
-            pass
+def trained_models(tmp_path, monkeypatch):
+    """Train real models into a temp dir so prediction paths can be exercised."""
+    import app.ml.train as train_module
+    import app.services.prediction_service as prediction_service
+    from app.ml.features import build_dataset
+    from tests.test_training import _simulate_league
 
-    app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as test_client:
-        yield test_client
-    app.dependency_overrides.clear()
-
-
-@pytest.fixture()
-def admin_user(db_session: Session) -> User:
-    user = User(
-        name="Test Admin",
-        email="admin@test.com",
-        password_hash=hash_password(TEST_PASSWORD),
-        role=UserRole.ADMIN,
+    monkeypatch.setattr(train_module, "MODEL_DIR", str(tmp_path))
+    monkeypatch.setattr(prediction_service, "MODEL_DIR", str(tmp_path))
+    prediction_service.clear_model_cache()
+    train_module.train_models(
+        build_dataset(_simulate_league()), targets=["match_winner", "btts", "over_under_2_5"]
     )
-    db_session.add(user)
-    db_session.commit()
-    db_session.refresh(user)
-    return user
-
-
-@pytest.fixture()
-def admin_user_2fa(db_session: Session) -> tuple[User, str]:
-    secret = pyotp.random_base32()
-    user = User(
-        name="2FA Admin",
-        email="2fa-admin@test.com",
-        password_hash=hash_password(TEST_PASSWORD),
-        role=UserRole.ADMIN,
-        two_factor_enabled=True,
-        two_factor_secret=secret,
-    )
-    db_session.add(user)
-    db_session.commit()
-    db_session.refresh(user)
-    return user, secret
-
-
-def admin_login(
-    client: TestClient,
-    email: str,
-    password: str,
-    otp_code: str | None = None,
-) -> TestClient:
-    payload: dict[str, str] = {"email": email, "password": TEST_PASSWORD}
-    if otp_code:
-        payload["otp_code"] = otp_code
-    response = client.post("/admin/auth/login", json=payload)
-    assert response.status_code == 200, response.text
-    return client
+    yield
+    prediction_service.clear_model_cache()

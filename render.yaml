@@ -1,0 +1,60 @@
+# Render Blueprint for the Football AI Predictor API.
+#
+# Deploy: https://dashboard.render.com/blueprints -> New Blueprint Instance.
+# An existing Render web service pointed at this repo keeps working without it:
+# it builds ./Dockerfile either way.
+#
+# Free plan: the service sleeps after 15 idle minutes (about a minute to wake),
+# files are wiped on restart (models are kept in the database instead), and a
+# free Render Postgres database is deleted after 30 days.
+
+services:
+  - type: web
+    name: bet-prediction-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: predictor-db
+          property: connectionString
+      # Without it every restart signs tokens with a new secret and logs
+      # everyone out.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ENVIRONMENT
+        value: production
+      # The website's origin, e.g. https://bet-prediction-project.vercel.app
+      # Vercel proxies /api server-side, so this only matters for direct calls.
+      - key: CORS_ORIGINS
+        sync: false
+      - key: FOOTBALL_API_KEY
+        sync: false
+      # Opt-in admin seeding; no admin is created unless both are set.
+      - key: DEFAULT_ADMIN_EMAIL
+        sync: false
+      - key: DEFAULT_ADMIN_PASSWORD
+        sync: false
+      # PUBLIC_API_URL must be this service's https URL: OPay posts payment
+      # callbacks there. PUBLIC_SITE_URL is where customers return after paying.
+      - key: PUBLIC_SITE_URL
+        sync: false
+      - key: PUBLIC_API_URL
+        sync: false
+      - key: OPAY_MERCHANT_ID
+        sync: false
+      - key: OPAY_PUBLIC_KEY
+        sync: false
+      - key: OPAY_SECRET_KEY
+        sync: false
+      # Leave unset to stay on OPay staging. Setting it moves real money.
+      - key: OPAY_PRODUCTION
+        sync: false
+
+databases:
+  - name: predictor-db
+    databaseName: predictor
+    user: predictor
+    plan: free
