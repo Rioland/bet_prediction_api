@@ -4,9 +4,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 
 from app.api.routes import (
     admin,
@@ -18,19 +17,21 @@ from app.api.routes import (
     admin_subscriptions,
     admin_users,
     auth,
+    football,
     matches,
+    news,
     notifications,
     predictions,
     subscriptions,
 )
 from app.core.config import settings
 from app.core.csrf import CSRFMiddleware
+from app.core.rate_limit import limiter
 from app.db.session import Base, engine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("football_ai")
 
-limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
     CORSMiddleware,
@@ -57,6 +58,8 @@ async def global_exception_handler(_: Request, exc: Exception) -> JSONResponse:
 
 
 app.include_router(auth.router)
+app.include_router(football.router)
+app.include_router(news.router)
 app.include_router(matches.router)
 app.include_router(predictions.router)
 app.include_router(subscriptions.router)

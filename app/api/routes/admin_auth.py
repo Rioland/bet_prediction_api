@@ -21,7 +21,8 @@ from app.schemas.admin import (
     TwoFAVerifyRequest,
 )
 from app.schemas.common import RefreshRequest, TokenPair
-from app.services.auth_service import issue_tokens
+from app.core.rate_limit import limiter
+from app.services.auth_service import issue_tokens, verify_second_factor
 from app.services.audit import log_admin_action
 
 router = APIRouter(prefix="/admin/auth", tags=["admin-auth"])
@@ -58,20 +59,14 @@ def _set_admin_cookies(response: Response, access_token: str, refresh_token: str
 
 
 @router.post("/login", response_model=AdminSessionResponse)
+@limiter.limit("5/minute")
 def admin_login(payload: AdminLoginRequest, db: DbSession, request: Request, response: Response) -> AdminSessionResponse:
     user = db.scalar(select(User).where(User.email == str(payload.email).lower()))
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if user.role not in {UserRole.ADMIN, UserRole.SUPER_ADMIN}:
         raise HTTPException(status_code=403, detail="Admin role required")
-    if user.two_factor_enabled:
-        if not user.two_factor_secret:
-            raise HTTPException(status_code=500, detail="2FA misconfigured for admin account")
-        if not payload.otp_code:
-            raise HTTPException(status_code=401, detail="OTP code required")
-        totp = pyotp.TOTP(user.two_factor_secret)
-        if not totp.verify(payload.otp_code, valid_window=1):
-            raise HTTPException(status_code=401, detail="Invalid OTP code")
+    verify_second_factor(user, payload.otp_code)
     db.add(
         LoginHistory(
             user_id=user.id,
@@ -99,6 +94,7 @@ def admin_login(payload: AdminLoginRequest, db: DbSession, request: Request, res
 
 
 @router.post("/refresh", response_model=TokenPair)
+@limiter.limit("20/minute")
 def admin_refresh(
     request: Request, response: Response, payload: RefreshRequest | None = None
 ) -> TokenPair:
@@ -163,7 +159,9 @@ def setup_admin_2fa(current_user: Annotated[User, Depends(get_current_user)], db
 
 
 @router.post("/2fa/verify")
+@limiter.limit("10/minute")
 def verify_admin_2fa(
+    request: Request,
     payload: TwoFAVerifyRequest,
     current_user: Annotated[User, Depends(get_current_user)],
     db: DbSession,

@@ -25,6 +25,9 @@ def get_current_user(
         raise credentials_exception
     try:
         payload = jwt.decode(auth_token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        # Refresh tokens are long-lived and must never authenticate a request.
+        if payload.get("type") != "access":
+            raise JWTError("invalid token type")
         user_id = int(payload.get("sub", "0"))
     except (JWTError, ValueError) as exc:
         raise credentials_exception from exc

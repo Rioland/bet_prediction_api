@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     football_api_base_url: str
     football_api_key: str
     model_dir: str = "app/ml/models"
-    settings_encryption_key: str = "change-me-to-32-bytes-minimum"
+    settings_encryption_key: str
     admin_cookie_secure: bool = False
     admin_cookie_samesite: str = "lax"
     cors_origins: str = "http://localhost:3000"
@@ -55,6 +55,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "REDIS_URL uses Docker hostname 'redis'. On Render, link the Redis "
                 "service or set REDIS_URL to your managed Redis connection string."
+            )
+        if not self.admin_cookie_secure:
+            raise ValueError(
+                "ADMIN_COOKIE_SECURE must be true in production so session cookies "
+                "are never sent over plaintext HTTP."
+            )
+        if "*" in self.cors_origins:
+            raise ValueError(
+                "CORS_ORIGINS must list explicit origins in production; '*' cannot be "
+                "combined with credentialed requests."
             )
         return self
 

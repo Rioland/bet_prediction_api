@@ -1,7 +1,18 @@
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum as SqlEnum, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Enum as SqlEnum,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -10,6 +21,13 @@ from app.db.session import Base
 class SubscriptionType(str, Enum):
     FREE = "free"
     PREMIUM = "premium"
+
+
+class TipResult(str, Enum):
+    PENDING = "pending"
+    WON = "won"
+    LOST = "lost"
+    VOID = "void"
 
 
 class UserRole(str, Enum):
@@ -79,6 +97,27 @@ class Match(Base):
     away_team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True)
     kickoff_time: Mapped[datetime] = mapped_column(DateTime, index=True)
     status: Mapped[str] = mapped_column(String(50), index=True)
+    external_id: Mapped[int | None] = mapped_column(Integer, unique=True, index=True)
+    season: Mapped[int | None] = mapped_column(Integer, index=True)
+
+    # Full-time result; NULL until the match is played. These are the labels.
+    home_goals: Mapped[int | None] = mapped_column(Integer)
+    away_goals: Mapped[int | None] = mapped_column(Integer)
+
+    # Post-match team stats, used only to build *historical* rolling features for
+    # later matches - never as features for this match.
+    home_shots_on_target: Mapped[int | None] = mapped_column(Integer)
+    away_shots_on_target: Mapped[int | None] = mapped_column(Integer)
+    home_possession: Mapped[float | None] = mapped_column(Float)
+    away_possession: Mapped[float | None] = mapped_column(Float)
+    home_corners: Mapped[int | None] = mapped_column(Integer)
+    away_corners: Mapped[int | None] = mapped_column(Integer)
+
+    # Closing market odds, for value detection and as a benchmark to beat.
+    odds_home: Mapped[float | None] = mapped_column(Float)
+    odds_draw: Mapped[float | None] = mapped_column(Float)
+    odds_away: Mapped[float | None] = mapped_column(Float)
+
     league: Mapped["League"] = relationship()
     home_team: Mapped["Team"] = relationship(foreign_keys=[home_team_id])
     away_team: Mapped["Team"] = relationship(foreign_keys=[away_team_id])
@@ -235,3 +274,44 @@ class SystemSetting(Base):
     encrypted_value: Mapped[str] = mapped_column(Text)
     updated_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PublishedTip(Base):
+    """An immutable record of a tip as published, before kickoff.
+
+    The results tracker is only meaningful if picks cannot be edited after the
+    fact, so nothing here is rewritten once settled except the outcome fields.
+    """
+
+    __tablename__ = "published_tips"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"), index=True)
+    market: Mapped[str] = mapped_column(String(40), index=True)
+    selection: Mapped[str] = mapped_column(String(40))
+    probability: Mapped[float] = mapped_column(Float)
+    odds: Mapped[float] = mapped_column(Float)
+    is_vip: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    rationale: Mapped[str | None] = mapped_column(String(400))
+    published_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    kickoff_time: Mapped[datetime] = mapped_column(DateTime, index=True)
+    result: Mapped[TipResult] = mapped_column(
+        SqlEnum(TipResult), default=TipResult.PENDING, index=True
+    )
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime)
+    match: Mapped["Match"] = relationship()
+
+    __table_args__ = (UniqueConstraint("match_id", "market", "selection", name="uq_tip_selection"),)
+
+
+class Article(Base):
+    __tablename__ = "articles"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    slug: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(250))
+    excerpt: Mapped[str | None] = mapped_column(String(500))
+    body: Mapped[str] = mapped_column(Text)
+    cover_image: Mapped[str | None] = mapped_column(String(512))
+    author: Mapped[str | None] = mapped_column(String(120))
+    published: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

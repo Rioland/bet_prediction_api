@@ -15,12 +15,17 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.db.session as db_module
+from app.core.rate_limit import limiter
 from app.core.security import hash_password
 from app.db.session import Base, get_db
 from app.main import app
 from app.models.entities import User, UserRole
 
 TEST_PASSWORD = "password123"
+
+# Rate limits are asserted in test_rate_limit.py; leaving them on would make every
+# other test order-dependent.
+limiter.enabled = False
 
 TEST_ENGINE = create_engine(
     "sqlite://",
@@ -101,3 +106,19 @@ def admin_login(
     response = client.post("/admin/auth/login", json=payload)
     assert response.status_code == 200, response.text
     return client
+
+
+@pytest.fixture()
+def trained_models(tmp_path, monkeypatch):
+    """Train real models into a temp dir so prediction endpoints can be exercised."""
+    from app.core.config import settings
+    from app.ml.features import build_dataset
+    from app.ml.train import train_models
+    from app.services import prediction_service
+    from tests.test_training import _simulate_league
+
+    monkeypatch.setattr(settings, "model_dir", str(tmp_path))
+    prediction_service.clear_model_cache()
+    train_models(build_dataset(_simulate_league()), targets=["match_winner", "btts", "over_under_2_5"])
+    yield
+    prediction_service.clear_model_cache()
