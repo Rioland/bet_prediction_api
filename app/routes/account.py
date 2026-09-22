@@ -3,9 +3,13 @@
 Separate from admin authentication. Customers and staff share the users table
 and the same token format, but staff sign in through /admin/auth, and nothing
 here can grant a role.
-"""
 
-from __future__ import annotations
+Annotations here must stay real objects, not strings: slowapi's @limiter.limit
+wraps each endpoint, and FastAPI resolves string annotations against the
+wrapper's module, where RegisterInput and DbSession do not exist. Under
+`from __future__ import annotations` every rate-limited route therefore read
+its JSON body and database session as missing query parameters and answered 422.
+"""
 
 import logging
 from typing import Annotated, Any
