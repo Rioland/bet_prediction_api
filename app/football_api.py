@@ -11,6 +11,7 @@ import asyncio
 import logging
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -329,6 +330,19 @@ def _fixture_key(fixture: dict) -> tuple:
     )
 
 
+# ESPN's scoreboard takes a single day, not a range: "dates=20260901-20260914"
+# answers 400, which silently emptied every refresh and backfill. Days are
+# therefore requested one at a time, with a cap on how many run at once so a
+# long backfill does not open hundreds of sockets against a free endpoint.
+_ESPN_CONCURRENCY = 8
+
+
+def _dates_in_window(today: date, days: int = 7, lookback: int = 0) -> list[date]:
+    """Every day in the window, inclusive of both ends."""
+    first = today - timedelta(days=lookback)
+    return [first + timedelta(days=offset) for offset in range(lookback + days + 1)]
+
+
 async def _fetch_espn_fixtures(
     today: date, days: int = 7, lookback: int = 0
 ) -> list[dict]:
@@ -337,45 +351,66 @@ async def _fetch_espn_fixtures(
     ``lookback`` extends the window backwards. Completed results are what the
     learning pipeline trains on, and they only exist in the past.
     """
-    start = (today - timedelta(days=lookback)).strftime("%Y%m%d")
-    end = (today + timedelta(days=days)).strftime("%Y%m%d")
-    async with httpx.AsyncClient(timeout=15) as client:
-        async def fetch(source: dict) -> list[dict]:
-            try:
-                response = await client.get(
-                    f"{ESPN_BASE}/{source['slug']}/scoreboard",
-                    params={"dates": f"{start}-{end}", "limit": 100},
-                )
-                if response.status_code == 200:
-                    return _parse_espn_events(response.json(), source)
-            except Exception:
-                pass
-            return []
+    days_wanted = _dates_in_window(today, days=days, lookback=lookback)
+    limit = asyncio.Semaphore(_ESPN_CONCURRENCY)
 
-        batches = await asyncio.gather(*(fetch(source) for source in ESPN_COMPETITIONS))
+    async with httpx.AsyncClient(timeout=15) as client:
+        async def fetch(source: dict, day: date) -> list[dict]:
+            async with limit:
+                try:
+                    response = await client.get(
+                        f"{ESPN_BASE}/{source['slug']}/scoreboard",
+                        params={"dates": day.strftime("%Y%m%d"), "limit": 100},
+                    )
+                    if response.status_code == 200:
+                        return _parse_espn_events(response.json(), source)
+                except Exception:
+                    pass
+                return []
+
+        batches = await asyncio.gather(
+            *(
+                fetch(source, day)
+                for source in ESPN_COMPETITIONS
+                for day in days_wanted
+            )
+        )
     return [fixture for batch in batches for fixture in batch]
 
 
 def _fetch_espn_fixtures_sync(today: date, days: int = 7) -> list[dict]:
-    """Synchronous fallback for the first request before the refresh task finishes."""
-    start = today.strftime("%Y%m%d")
-    end = (today + timedelta(days=days)).strftime("%Y%m%d")
-    fixtures: list[dict] = []
+    """Synchronous fallback for the first request before the refresh task finishes.
+
+    It runs inside that request, so the per-day calls go out in parallel: one
+    after another they would keep the first visitor after a cold start waiting
+    for over a hundred round trips.
+    """
+    jobs = [
+        (source, day)
+        for source in ESPN_COMPETITIONS
+        for day in _dates_in_window(today, days=days)
+    ]
+
+    def fetch(client: httpx.Client, source: dict, day: date) -> list[dict]:
+        try:
+            response = client.get(
+                f"{ESPN_BASE}/{source['slug']}/scoreboard",
+                params={"dates": day.strftime("%Y%m%d"), "limit": 100},
+            )
+            if response.status_code == 200:
+                return _parse_espn_events(response.json(), source)
+        except Exception:
+            pass
+        return []
+
     try:
-        with httpx.Client(timeout=12) as client:
-            for source in ESPN_COMPETITIONS:
-                try:
-                    response = client.get(
-                        f"{ESPN_BASE}/{source['slug']}/scoreboard",
-                        params={"dates": f"{start}-{end}", "limit": 100},
-                    )
-                    if response.status_code == 200:
-                        fixtures.extend(_parse_espn_events(response.json(), source))
-                except Exception:
-                    continue
+        with httpx.Client(timeout=12) as client, ThreadPoolExecutor(
+            max_workers=_ESPN_CONCURRENCY
+        ) as pool:
+            batches = pool.map(lambda job: fetch(client, *job), jobs)
+            return [fixture for batch in batches for fixture in batch]
     except Exception:
         return []
-    return fixtures
 
 
 def _enrich_with_predictions(fixtures: list[dict]) -> list[dict]:
