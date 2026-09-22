@@ -33,6 +33,14 @@ from app.rate_limit import limiter
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.football_api import refresh_fixtures_loop
+from app.services.bootstrap import bootstrap
+
+# Uvicorn configures only its own loggers. Without this the app's INFO
+# messages - fixture refreshes, the startup backfill, training - never reach
+# the platform's logs, so a deploy gives no sign of what it is doing.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s - %(message)s")
+# One line per feed request is thousands of lines per backfill.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 # Set when database setup fails, so /healthz can report why instead of the
@@ -61,16 +69,21 @@ async def lifespan(app: FastAPI):
         STARTUP_ERROR = f"{type(exc).__name__}: {str(exc).splitlines()[0][:300]}"
         logging.getLogger(__name__).exception("Database setup failed; serving in a degraded state")
 
-    refresh_task = (
-        asyncio.create_task(refresh_fixtures_loop()) if FIXTURE_REFRESH_ENABLED else None
-    )
+    background = []
+    if FIXTURE_REFRESH_ENABLED:
+        background.append(asyncio.create_task(refresh_fixtures_loop()))
+        # A new database gets its history and first model here, without anyone
+        # running the scripts. Skipped when the database is unreachable: it
+        # would only fail, and /healthz already reports why.
+        if STARTUP_ERROR is None:
+            background.append(asyncio.create_task(bootstrap()))
     try:
         yield
     finally:
-        if refresh_task is not None:
-            refresh_task.cancel()
+        for task in background:
+            task.cancel()
             try:
-                await refresh_task
+                await task
             except asyncio.CancelledError:
                 pass
 
