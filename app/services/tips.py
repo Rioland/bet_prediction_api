@@ -17,10 +17,33 @@ that says anything about whether a bet is worth placing.
 from dataclasses import dataclass
 from typing import Any
 
-from app.ml.dixon_coles import first_half, handicap, over_line, score_matrix, win_either_half
+from app.ml.dixon_coles import (
+    clean_sheet,
+    ever_leads,
+    first_half,
+    half_time_full_time,
+    handicap,
+    odd_even,
+    over_line,
+    score_matrix,
+    team_total_over,
+    win_either_half,
+    win_to_nil,
+)
 
 # A tip is only surfaced if the model is at least this sure.
 MIN_PROBABILITY = 0.55
+
+# Half time / full time splits the match nine ways, so no selection reaches a
+# floor written for two-way markets - a 55% gate would empty the tab every day
+# rather than filter it. A third of the outcome is three times the 11% an even
+# split would give, which is the same kind of claim 55% makes about a coin
+# flip. The confidence band shown alongside still reports it as weak.
+MARKET_MIN_PROBABILITY = {"ht_ft": 0.30}
+
+
+def floor_for(market: str) -> float:
+    return MARKET_MIN_PROBABILITY.get(market, MIN_PROBABILITY)
 # VIP picks are the ones that also show positive expected value.
 VIP_MIN_VALUE = 0.04
 
@@ -31,9 +54,24 @@ MIN_MEANINGFUL_EDGE = 0.005
 
 MARKETS = [
     "popular", "banker", "2_odds", "home_win", "away_win", "draws",
-    "double_chance", "either_half", "first_half", "first_half_goals",
-    "handicap", "btts", "over_1_5", "over_2_5", "under_3_5", "acca",
+    "double_chance", "either_half", "anytime_lead", "first_half", "first_half_goals",
+    "ht_ft", "handicap", "win_to_nil", "clean_sheet", "btts", "over_1_5",
+    "over_2_5", "under_3_5", "team_goals", "odd_even", "acca",
 ]
+
+# The handicap lines punters actually play. -0.5 is the outright win by another
+# name and +0.5 the draw-no-bet cover; the rest ask for or forgive a clear
+# margin. Whole numbers are absent on purpose: they push, and a single
+# probability cannot express a returned stake.
+HANDICAP_LINES = (-2.5, -1.5, -0.5, 0.5, 1.5, 2.5)
+
+# Half time / full time reads half first, then full, so "away/home" is a side
+# going behind at the break and winning it anyway.
+_HT_FT_SELECTIONS = {
+    "home/home": "1/1", "home/draw": "1/X", "home/away": "1/2",
+    "draw/home": "X/1", "draw/draw": "X/X", "draw/away": "X/2",
+    "away/home": "2/1", "away/draw": "2/X", "away/away": "2/2",
+}
 
 
 @dataclass
@@ -83,6 +121,110 @@ def _tip(market, selection, label, probability, offered_odds, rationale, source=
     implied = 1 / odds if odds > 0 else 1.0
     return Tip(market, selection, label, probability, odds, fair,
                probability - implied, rationale, source)
+
+
+def _margin_words(line: float) -> str:
+    """"two or more" and the like, for the clear margin a handicap line asks for."""
+    goals = int(abs(line) + 0.5)
+    return {1: "one goal", 2: "two goals", 3: "three goals"}.get(goals, f"{goals} goals")
+
+
+def _handicap_tips(home: str, away: str, home_xg: float, away_xg: float) -> list[Tip]:
+    """Every supported handicap line, for both sides."""
+    tips: list[Tip] = []
+    for line in HANDICAP_LINES:
+        for side, name in (("home", home), ("away", away)):
+            probability = handicap(home_xg, away_xg, line, side)
+            margin = _margin_words(line)
+            if line < 0:
+                label = f"{name} to win by {int(abs(line) + 0.5)}+"
+                rationale = (
+                    f"{name} win by {margin} or more in {probability:.0%} of "
+                    "modelled outcomes."
+                )
+            else:
+                label = f"{name} {line:+.1f}"
+                rationale = (
+                    f"{name} avoid losing by {margin} in {probability:.0%} of "
+                    "modelled outcomes."
+                )
+            selection = f"{'1' if side == 'home' else '2'} ({line:+.1f})"
+            tips.append(
+                _tip("handicap", selection, label, probability, None, rationale,
+                     source="derived")
+            )
+    return tips
+
+
+def _lead_and_nil_tips(home: str, away: str, matrix, home_xg: float, away_xg: float) -> list[Tip]:
+    """Leading at some point, winning to nil, and keeping a clean sheet."""
+    tips: list[Tip] = []
+    for side, name, opponent in (("home", home, away), ("away", away, home)):
+        lead = ever_leads(home_xg, away_xg, side)
+        nil = win_to_nil(matrix, side)
+        sheet = clean_sheet(matrix, side)
+        tips += [
+            _tip("anytime_lead", f"{'1' if side == 'home' else '2'} LEAD",
+                 f"{name} to lead at any point", lead, None,
+                 f"{name} are in front at some stage in {lead:.0%} of modelled "
+                 "outcomes, whether or not they hold it.",
+                 source="derived"),
+            _tip("win_to_nil", f"{'1' if side == 'home' else '2'} WTN",
+                 f"{name} to win to nil", nil, None,
+                 f"{name} win without conceding in {nil:.0%} of modelled outcomes.",
+                 source="derived"),
+            _tip("clean_sheet", f"{'1' if side == 'home' else '2'} CS",
+                 f"{name} clean sheet", sheet, None,
+                 f"{opponent} fail to score in {sheet:.0%} of modelled outcomes.",
+                 source="derived"),
+        ]
+    return tips
+
+
+def _ht_ft_tips(home: str, away: str, home_xg: float, away_xg: float) -> list[Tip]:
+    """The nine half-time/full-time doubles."""
+    combos = half_time_full_time(home_xg, away_xg)
+    names = {"home": home, "draw": "Level", "away": away}
+    tips: list[Tip] = []
+    for key, probability in combos.items():
+        half, full = key.split("/")
+        at_half = f"{names[half]} ahead at half time" if half != "draw" else "Level at half time"
+        at_full = f"{names[full]} win" if full != "draw" else "a draw"
+        tips.append(
+            _tip("ht_ft", _HT_FT_SELECTIONS[key], f"{at_half}, {at_full}",
+                 probability, None,
+                 f"{at_half} and then {at_full} in {probability:.0%} of modelled "
+                 "outcomes.",
+                 source="derived")
+        )
+    return tips
+
+
+def _goals_shape_tips(home: str, away: str, matrix) -> list[Tip]:
+    """One side's goals on their own, and whether the total is odd or even."""
+    tips: list[Tip] = []
+    for side, name in (("home", home), ("away", away)):
+        for line in (0.5, 1.5):
+            probability = team_total_over(matrix, line, side)
+            tips.append(
+                _tip("team_goals", f"{'1' if side == 'home' else '2'} Over {line}",
+                     f"{name} over {line} goals", probability, None,
+                     f"{name} score more than {line} in {probability:.0%} of "
+                     "modelled outcomes.",
+                     source="derived")
+            )
+
+    parity = odd_even(matrix)
+    tips += [
+        _tip("odd_even", "Odd", "Odd total goals", parity["odd"], None,
+             f"An odd total lands in {parity['odd']:.0%} of modelled outcomes.",
+             source="derived"),
+        _tip("odd_even", "Even", "Even total goals", parity["even"], None,
+             f"An even total - 0-0 included - lands in {parity['even']:.0%} of "
+             "modelled outcomes.",
+             source="derived"),
+    ]
+    return tips
 
 
 def build_tips(prediction: dict[str, Any], match: dict[str, Any]) -> list[Tip]:
@@ -138,27 +280,6 @@ def build_tips(prediction: dict[str, Any], match: dict[str, Any]) -> list[Tip]:
         _tip("first_half_goals", "1H Over 1.5", "Two goals in the first half",
              half["over_1_5"], None,
              f"{half['expected_goals']:.1f} goals expected before the break.", source="derived"),
-        # -1.5 is the handicap punters actually play: win by two clear goals.
-        _tip("handicap", "1 (-1.5)", f"{home} to win by 2+",
-             handicap(home_xg, away_xg, -1.5, "home"), None,
-             f"{home} win by two clear goals in "
-             f"{handicap(home_xg, away_xg, -1.5, 'home'):.0%} of modelled outcomes.",
-             source="derived"),
-        _tip("handicap", "2 (-1.5)", f"{away} to win by 2+",
-             handicap(home_xg, away_xg, -1.5, "away"), None,
-             f"{away} win by two clear goals in "
-             f"{handicap(home_xg, away_xg, -1.5, 'away'):.0%} of modelled outcomes.",
-             source="derived"),
-        _tip("handicap", "1 (+1.5)", f"{home} +1.5",
-             handicap(home_xg, away_xg, 1.5, "home"), None,
-             f"{home} avoid losing by two or more in "
-             f"{handicap(home_xg, away_xg, 1.5, 'home'):.0%} of modelled outcomes.",
-             source="derived"),
-        _tip("handicap", "2 (+1.5)", f"{away} +1.5",
-             handicap(home_xg, away_xg, 1.5, "away"), None,
-             f"{away} avoid losing by two or more in "
-             f"{handicap(home_xg, away_xg, 1.5, 'away'):.0%} of modelled outcomes.",
-             source="derived"),
         _tip("btts", "GG", "Both teams to score", prediction["btts_prob"], None,
              f"Both sides score in {prediction['btts_prob']:.0%} of modelled outcomes."),
         _tip("over_2_5", "Over 2.5", "Over 2.5 goals", prediction["over_25_prob"], None,
@@ -170,6 +291,14 @@ def build_tips(prediction: dict[str, Any], match: dict[str, Any]) -> list[Tip]:
              1 - total_goals_over(3.5, home_xg, away_xg), None,
              f"Expected goals of {expected_total:.1f} keeps this below 3.5.", source="derived"),
     ]
+
+    # One matrix, shared by every market read off a finished scoreline.
+    matrix = score_matrix(home_xg, away_xg)
+    tips += _handicap_tips(home, away, home_xg, away_xg)
+    tips += _lead_and_nil_tips(home, away, matrix, home_xg, away_xg)
+    tips += _ht_ft_tips(home, away, home_xg, away_xg)
+    tips += _goals_shape_tips(home, away, matrix)
+
     return sorted(tips, key=lambda t: t.probability, reverse=True)
 
 
@@ -182,16 +311,27 @@ def best_tip(prediction: dict[str, Any], match: dict[str, Any]) -> Tip | None:
 # Some selections are near-tautological: they win unless something unusual
 # happens, so they top any probability ranking and would be the only thing ever
 # shown. Double chance is one ("1X" is by construction at least as likely as
-# "1"); so is a +1.5 handicap, which only loses if a side is beaten by two or
-# more. Both stay available on their own tabs and are kept out of mixed views.
+# "1"); so is a positive handicap, which only loses if a side is beaten by a
+# clear margin; so is leading at any point, which every winner does on the way.
+# All stay available on their own tabs and are kept out of mixed views.
 #
-# The -1.5 handicap is the opposite - a genuinely demanding call - so it stays.
-_EXCLUDED_MARKETS_FROM_MIXED = {"double_chance"}
+# Odd or even is excluded for the opposite reason. It sits near a coin flip
+# whatever the fixture, so ranking it against markets the model has an opinion
+# on would fill the card with noise.
+#
+# A negative handicap is a genuinely demanding call, so it stays.
+_EXCLUDED_MARKETS_FROM_MIXED = {"double_chance", "anytime_lead", "odd_even"}
 
 
 def _is_cover_bet(tip: "Tip") -> bool:
-    """A selection that wins unless a side is beaten by a clear margin."""
-    return tip.market == "handicap" and "(+" in tip.selection
+    """A selection that wins unless something unusual happens.
+
+    Two shapes qualify: a positive handicap, which survives anything short of a
+    clear defeat, and a side merely scoring at all, which most sides do.
+    """
+    if tip.market == "handicap":
+        return "(+" in tip.selection
+    return tip.market == "team_goals" and "Over 0.5" in tip.selection
 
 
 def _excluded_from_mixed(tip: "Tip") -> bool:
@@ -211,7 +351,7 @@ def filter_by_market(tips: list[Tip], market: str) -> list[Tip]:
         return sorted(priced or mixed, key=lambda t: (t.value, t.probability), reverse=True)
     # An explicit market tab still must not present a coin-flip as a call: a
     # 46% BTTS "tip" recommends an outcome the model rates as unlikely.
-    return [t for t in tips if t.market == market and t.probability >= MIN_PROBABILITY]
+    return [t for t in tips if t.market == market and t.probability >= floor_for(market)]
 
 
 def select_banker(cards: list[dict[str, Any]]) -> dict[str, Any] | None:

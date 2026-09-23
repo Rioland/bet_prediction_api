@@ -153,3 +153,101 @@ def test_whole_number_handicaps_are_refused() -> None:
 
     with pytest.raises(ValueError, match="push"):
         handicap(1.9, 0.95, -1.0, "home")
+
+
+# --- leading, nil and the shape of the goals ---------------------------------
+
+
+def test_leading_at_some_point_is_at_least_winning() -> None:
+    """Every winner led at the final whistle; some who led did not win."""
+    from app.ml.dixon_coles import ever_leads
+
+    full = outcomes(score_matrix(1.9, 0.95))
+    assert ever_leads(1.9, 0.95, "home") > full["home_win"]
+    assert ever_leads(1.9, 0.95, "away") > full["away_win"]
+
+
+def test_evenly_matched_sides_are_equally_likely_to_lead() -> None:
+    from app.ml.dixon_coles import ever_leads
+
+    assert ever_leads(1.3, 1.3, "home") == pytest.approx(ever_leads(1.3, 1.3, "away"))
+
+
+def test_leading_rises_with_the_scoring_rate() -> None:
+    from app.ml.dixon_coles import ever_leads
+
+    rates = [ever_leads(rate, 1.2, "home") for rate in (0.6, 1.2, 2.4)]
+    assert rates == sorted(rates), "a better attack cannot lead less often"
+
+
+def test_nobody_leads_in_a_goalless_match() -> None:
+    """Leading requires a goal, so no side can lead more often than one is scored.
+
+    The two sides are not bounded jointly: a match that goes 1-0 then 1-2 has
+    both of them leading, so their probabilities can sum past one.
+    """
+    from math import exp
+
+    from app.ml.dixon_coles import ever_leads
+
+    any_goal = 1 - exp(-(1.4 + 1.1))
+    assert ever_leads(1.4, 1.1, "home") <= any_goal + 1e-9
+    assert ever_leads(1.4, 1.1, "away") <= any_goal + 1e-9
+
+
+def test_winning_to_nil_implies_a_clean_sheet() -> None:
+    from app.ml.dixon_coles import clean_sheet, win_to_nil
+
+    matrix = score_matrix(1.9, 0.95)
+    assert win_to_nil(matrix, "home") < clean_sheet(matrix, "home")
+
+
+def test_a_clean_sheet_is_a_win_to_nil_or_a_goalless_draw() -> None:
+    from app.ml.dixon_coles import clean_sheet, win_to_nil
+
+    matrix = score_matrix(1.6, 1.1)
+    assert clean_sheet(matrix, "home") == pytest.approx(win_to_nil(matrix, "home") + matrix[0][0])
+
+
+def test_half_time_full_time_is_a_distribution() -> None:
+    from app.ml.dixon_coles import half_time_full_time
+
+    combos = half_time_full_time(1.9, 0.95)
+    assert len(combos) == 9
+    assert sum(combos.values()) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_coming_from_behind_is_rarer_than_holding_on() -> None:
+    """The favourite losing the first half and winning the match is the hard way."""
+    from app.ml.dixon_coles import half_time_full_time
+
+    combos = half_time_full_time(1.9, 0.95)
+    assert combos["away/home"] < combos["home/home"]
+
+
+def test_full_time_results_agree_with_the_match_model() -> None:
+    """Summing the halves must reproduce the 1X2 the matrix already gives."""
+    from app.ml.dixon_coles import half_time_full_time
+
+    combos = half_time_full_time(1.6, 1.2)
+    full = outcomes(score_matrix(1.6, 1.2))
+    home = sum(p for key, p in combos.items() if key.endswith("/home"))
+    assert home == pytest.approx(full["home_win"], abs=0.02)
+
+
+def test_team_totals_are_ordered_and_match_the_side() -> None:
+    from app.ml.dixon_coles import team_total_over
+
+    matrix = score_matrix(1.9, 0.95)
+    assert team_total_over(matrix, 0.5, "home") > team_total_over(matrix, 1.5, "home")
+    assert team_total_over(matrix, 0.5, "home") > team_total_over(matrix, 0.5, "away")
+
+
+def test_odd_and_even_split_the_whole_distribution() -> None:
+    from app.ml.dixon_coles import odd_even
+
+    parity = odd_even(score_matrix(1.9, 0.95))
+    assert parity["odd"] + parity["even"] == pytest.approx(1.0, abs=1e-9)
+    # 0-0 is even, so a low-scoring fixture leans even rather than being a
+    # perfect coin flip.
+    assert odd_even(score_matrix(0.6, 0.5))["even"] > 0.5

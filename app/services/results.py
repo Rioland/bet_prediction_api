@@ -6,6 +6,7 @@ is what separates a verifiable track record from the decorative "winning slips"
 that prediction sites usually show.
 """
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -16,6 +17,38 @@ from app.models import Match, PublishedTip
 from app.services.ingest import FINISHED_STATUSES
 
 
+# Selections written as a side and a number: "1 (-1.5)" for a handicap,
+# "2 Over 0.5" for one side's goals.
+_HANDICAP = re.compile(r"^([12]) \(([+-]\d+(?:\.\d+)?)\)$")
+_TEAM_GOALS = re.compile(r"^([12]) Over (\d+(?:\.\d+)?)$")
+
+
+def _parametrised(market: str, selection: str, home_goals: int, away_goals: int) -> bool | None:
+    """Settle the markets whose selection carries a line in its name."""
+    if market == "handicap":
+        match = _HANDICAP.match(selection)
+        if match is None:
+            return None
+        side, line = match.group(1), float(match.group(2))
+        if side == "1":
+            return home_goals + line > away_goals
+        return away_goals + line > home_goals
+
+    if market == "team_goals":
+        match = _TEAM_GOALS.match(selection)
+        if match is None:
+            return None
+        side, line = match.group(1), float(match.group(2))
+        return (home_goals if side == "1" else away_goals) > line
+
+    return None
+
+
+# Half-based and in-play markets - either half, first half, half time/full
+# time, leading at any point - cannot be read off a final score, so they settle
+# as void rather than being guessed at. Recording them as wins or losses on
+# nothing but the full-time result would put unverified claims in the
+# published record, which is the one thing this module exists to prevent.
 def settle_selection(market: str, selection: str, home_goals: int, away_goals: int) -> str:
     total = home_goals + away_goals
     won = {
@@ -24,12 +57,21 @@ def settle_selection(market: str, selection: str, home_goals: int, away_goals: i
         ("draws", "X"): home_goals == away_goals,
         ("double_chance", "1X"): home_goals >= away_goals,
         ("double_chance", "X2"): away_goals >= home_goals,
+        ("double_chance", "12"): home_goals != away_goals,
         ("btts", "GG"): home_goals > 0 and away_goals > 0,
         ("over_1_5", "Over 1.5"): total > 1.5,
         ("over_2_5", "Over 2.5"): total > 2.5,
         ("under_3_5", "Under 3.5"): total < 3.5,
+        ("win_to_nil", "1 WTN"): home_goals > away_goals and away_goals == 0,
+        ("win_to_nil", "2 WTN"): away_goals > home_goals and home_goals == 0,
+        ("clean_sheet", "1 CS"): away_goals == 0,
+        ("clean_sheet", "2 CS"): home_goals == 0,
+        ("odd_even", "Odd"): total % 2 == 1,
+        ("odd_even", "Even"): total % 2 == 0,
     }.get((market, selection))
 
+    if won is None:
+        won = _parametrised(market, selection, home_goals, away_goals)
     if won is None:
         return "void"
     return "won" if won else "lost"

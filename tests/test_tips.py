@@ -198,3 +198,115 @@ def test_cover_bets_remain_on_their_own_tab() -> None:
 
     selections = {t.selection for t in filter_by_market(build_tips(PREDICTION, MATCH), "handicap")}
     assert any("(+" in s for s in selections), "the handicap tab should still offer them"
+
+
+def test_new_markets_are_offered_and_named_for_the_teams() -> None:
+    tips = build_tips(PREDICTION, MATCH)
+    markets = {t.market for t in tips}
+    assert {"anytime_lead", "win_to_nil", "clean_sheet", "ht_ft",
+            "team_goals", "odd_even", "handicap", "btts"} <= markets
+
+    lead = next(t for t in tips if t.market == "anytime_lead" and t.selection == "1 LEAD")
+    assert lead.label == "Arsenal to lead at any point"
+    assert lead.source == "derived", "in-play leading is inferred, not fitted"
+
+
+def test_every_handicap_line_is_quoted_for_both_sides() -> None:
+    lines = {t.selection for t in build_tips(PREDICTION, MATCH) if t.market == "handicap"}
+    assert lines == {
+        f"{side} ({line:+.1f})" for side in ("1", "2")
+        for line in (-2.5, -1.5, -0.5, 0.5, 1.5, 2.5)
+    }
+
+
+def test_handicap_tips_agree_with_the_model() -> None:
+    from app.ml.dixon_coles import handicap
+
+    tip = next(
+        t for t in build_tips(PREDICTION, MATCH)
+        if t.market == "handicap" and t.selection == "1 (-1.5)"
+    )
+    assert tip.probability == pytest.approx(handicap(1.8, 0.9, -1.5, "home"))
+
+
+def test_half_time_full_time_offers_all_nine_doubles() -> None:
+    tips = [t for t in build_tips(PREDICTION, MATCH) if t.market == "ht_ft"]
+    assert len(tips) == 9
+    assert sum(t.probability for t in tips) == pytest.approx(1.0, abs=1e-9)
+    comeback = next(t for t in tips if t.selection == "2/1")
+    assert comeback.label == "Brentford ahead at half time, Arsenal win"
+
+
+def test_near_certain_selections_stay_out_of_the_popular_card() -> None:
+    """A side merely scoring, or a +2.5 start, would top every mixed ranking."""
+    from app.services.tips import filter_by_market
+
+    popular = {t.selection for t in filter_by_market(build_tips(PREDICTION, MATCH), "popular")}
+    assert "1 Over 0.5" not in popular
+    assert "1 (+2.5)" not in popular
+    assert "1 LEAD" not in popular
+
+
+def test_a_coin_flip_market_is_reachable_on_its_own_tab() -> None:
+    """Excluded from mixed views is not the same as unavailable."""
+    from app.services.tips import MARKETS, filter_by_market
+
+    assert "odd_even" in MARKETS
+    tips = build_tips({**PREDICTION, "home_xg": 0.6, "away_xg": 0.5}, MATCH)
+    assert filter_by_market(tips, "odd_even"), "the tab must still return its selection"
+
+
+@pytest.mark.parametrize(
+    ("market", "selection", "score", "expected"),
+    [
+        ("handicap", "1 (-1.5)", (3, 1), "won"),
+        ("handicap", "1 (-1.5)", (2, 1), "lost"),
+        ("handicap", "2 (+1.5)", (2, 1), "won"),
+        ("handicap", "2 (+1.5)", (3, 1), "lost"),
+        ("handicap", "1 (-0.5)", (1, 0), "won"),
+        ("win_to_nil", "1 WTN", (2, 0), "won"),
+        ("win_to_nil", "1 WTN", (2, 1), "lost"),
+        ("clean_sheet", "1 CS", (0, 0), "won"),
+        ("clean_sheet", "2 CS", (0, 0), "won"),
+        ("team_goals", "1 Over 1.5", (2, 0), "won"),
+        ("team_goals", "1 Over 1.5", (1, 3), "lost"),
+        ("odd_even", "Odd", (2, 1), "won"),
+        ("odd_even", "Even", (0, 0), "won"),
+        ("double_chance", "12", (1, 0), "won"),
+        ("double_chance", "12", (1, 1), "lost"),
+    ],
+)
+def test_new_markets_settle_from_the_final_score(market, selection, score, expected) -> None:
+    assert settle_selection(market, selection, *score) == expected
+
+
+@pytest.mark.parametrize(
+    ("market", "selection"),
+    [
+        ("anytime_lead", "1 LEAD"),
+        ("ht_ft", "1/1"),
+        ("either_half", "1WEH"),
+        ("first_half", "1H1"),
+    ],
+)
+def test_in_play_markets_are_voided_rather_than_guessed(market, selection) -> None:
+    """A final score cannot say who led at the break, so no record is claimed."""
+    assert settle_selection(market, selection, 3, 0) == "void"
+
+
+def test_the_nine_way_market_is_judged_on_its_own_scale() -> None:
+    """A 55% gate written for two-way markets would empty this tab every day."""
+    from app.services.tips import filter_by_market
+
+    tips = build_tips(PREDICTION, MATCH)
+    offered = filter_by_market(tips, "ht_ft")
+    assert offered, "the strongest half time/full time double must be reachable"
+    assert offered[0].probability < 0.55
+
+
+def test_a_weak_nine_way_call_never_reaches_the_popular_card() -> None:
+    """Reachable on its own tab is not the same as fit to lead the card."""
+    from app.services.tips import filter_by_market
+
+    popular = filter_by_market(build_tips(PREDICTION, MATCH), "popular")
+    assert all(t.market != "ht_ft" for t in popular)

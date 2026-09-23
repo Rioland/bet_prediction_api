@@ -169,6 +169,122 @@ def handicap(lam_home: float, lam_away: float, line: float, side: str = "home") 
     return covered
 
 
+def win_to_nil(matrix: list[list[float]], side: str = "home") -> float:
+    """P(side wins without conceding)."""
+    if side == "home":
+        return sum(matrix[i][0] for i in range(1, MAX_GOALS))
+    return sum(matrix[0][j] for j in range(1, MAX_GOALS))
+
+
+def clean_sheet(matrix: list[list[float]], side: str = "home") -> float:
+    """P(side concedes nothing), win or draw."""
+    if side == "home":
+        return sum(matrix[i][0] for i in range(MAX_GOALS))
+    return sum(matrix[0][j] for j in range(MAX_GOALS))
+
+
+def team_total_over(matrix: list[list[float]], line: float, side: str = "home") -> float:
+    """P(one side alone scores more than the line)."""
+    if side == "home":
+        return sum(
+            matrix[i][j] for i in range(MAX_GOALS) for j in range(MAX_GOALS) if i > line
+        )
+    return sum(
+        matrix[i][j] for i in range(MAX_GOALS) for j in range(MAX_GOALS) if j > line
+    )
+
+
+def odd_even(matrix: list[list[float]]) -> dict[str, float]:
+    """P(total goals is odd) and P(it is even). 0-0 counts as even."""
+    odd = sum(
+        matrix[i][j]
+        for i in range(MAX_GOALS)
+        for j in range(MAX_GOALS)
+        if (i + j) % 2 == 1
+    )
+    return {"odd": odd, "even": 1.0 - odd}
+
+
+# Half time / full time pairs one half's result with the finished match. The
+# two halves are scored as separate short matches and added, which assumes a
+# side plays the second half the way it played the first - it does not, so this
+# is surfaced as derived like every other half-based market.
+_RESULTS = ("home", "draw", "away")
+
+
+def _result_of(home_goals: int, away_goals: int) -> str:
+    if home_goals > away_goals:
+        return "home"
+    if home_goals < away_goals:
+        return "away"
+    return "draw"
+
+
+def half_time_full_time(lam_home: float, lam_away: float) -> dict[str, float]:
+    """The nine half-time/full-time combinations, keyed "home/away" and so on.
+
+    Keys read half first, then full: "away/home" is the away side ahead at the
+    break and the home side winning it in the end.
+    """
+    (h1_home, h1_away), (h2_home, h2_away) = half_rates(lam_home, lam_away)
+    first = score_matrix(h1_home, h1_away)
+    second = score_matrix(h2_home, h2_away)
+
+    combos = {f"{ht}/{ft}": 0.0 for ht in _RESULTS for ft in _RESULTS}
+    for home_1 in range(MAX_GOALS):
+        for away_1 in range(MAX_GOALS):
+            p_half = first[home_1][away_1]
+            if p_half <= 0.0:
+                continue
+            ht = _result_of(home_1, away_1)
+            for home_2 in range(MAX_GOALS):
+                for away_2 in range(MAX_GOALS):
+                    ft = _result_of(home_1 + home_2, away_1 + away_2)
+                    combos[f"{ht}/{ft}"] += p_half * second[home_2][away_2]
+    return combos
+
+
+# A scoreline distribution says how a match ends, not what happened on the way
+# there, so "ahead at some point" cannot be read off the matrix. It is computed
+# from the goal sequence instead: goals arrive at the combined rate, each one
+# belongs to the home side with probability lam_home / (lam_home + lam_away),
+# and the lead is the running difference. Two consequences worth naming: the
+# tau correction has no counterpart here (it adjusts finished scorelines), and
+# the model has no notion of a side shutting up shop once ahead.
+_MAX_SEQUENCE = 2 * MAX_GOALS
+
+
+def ever_leads(lam_home: float, lam_away: float, side: str = "home") -> float:
+    """P(side is ahead at some point during the match).
+
+    Always at least the outright win probability: a side that wins was ahead
+    at the final whistle, while one that leads and is pegged back is counted
+    here and nowhere else.
+    """
+    lam_home = max(MIN_RATE, min(lam_home, MAX_RATE))
+    lam_away = max(MIN_RATE, min(lam_away, MAX_RATE))
+    total_rate = lam_home + lam_away
+    scoring = (lam_home if side == "home" else lam_away) / total_rate
+
+    # Paths that have not yet put the side in front, by goal difference from
+    # its point of view. Reaching +1 is absorbing, so every live state is <= 0.
+    behind: dict[int, float] = {0: 1.0}
+    never_ahead = _poisson(total_rate, 0)  # a goalless match leads nowhere
+
+    for goals in range(1, _MAX_SEQUENCE + 1):
+        nxt: dict[int, float] = {}
+        for margin, mass in behind.items():
+            if margin < 0:  # scoring only closes the gap, so the path survives
+                nxt[margin + 1] = nxt.get(margin + 1, 0.0) + mass * scoring
+            nxt[margin - 1] = nxt.get(margin - 1, 0.0) + mass * (1 - scoring)
+        behind = nxt
+        never_ahead += _poisson(total_rate, goals) * sum(behind.values())
+
+    # Sequences longer than _MAX_SEQUENCE carry the mass the score matrix also
+    # truncates away, and at these rates that is a rounding error.
+    return 1.0 - never_ahead
+
+
 def expected_goals(features: dict[str, float]) -> tuple[float, float]:
     """Expected goals from learned rolling rates.
 
